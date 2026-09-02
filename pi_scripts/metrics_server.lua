@@ -10,9 +10,8 @@ end
 
 local function get_temp()
   local raw = read_file("/sys/class/thermal/thermal_zone0/temp")
-  --if raw then return raw / 1000.0 end
-  --return nil
-  return 32.2917839833274
+  if raw then return raw / 1000.0 end
+  return nil
 end
 
 local function shell(cmd)
@@ -103,11 +102,6 @@ while true do
   client:settimeout(2)
   local request, err = client:receive("*l")
   if request then
-    -- drain remaining headers
-    --while true do
-    --  local line = client:receive("*l")
-    --  if not line or line == "" then break end
-    --end
     local body = json_metrics()
     client:send("HTTP/1.1 200 OK\r\n")
     client:send("Content-Type: application/json\r\n")
