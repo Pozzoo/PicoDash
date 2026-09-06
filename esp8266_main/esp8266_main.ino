@@ -48,12 +48,15 @@ const unsigned long POLL_INTERVAL = 2000;
 const unsigned long LONG_PRESS_MS = 800;
 
 
-bool buttonWasPressed = false;
-unsigned long pressStartTime = 0;
-bool longPressTriggered = false;
+volatile unsigned long btnDownMs = 0;
+volatile unsigned long btnUpMs = 0;
+volatile bool btnEvent = false;
+volatile bool btnPressed = false;
+bool longPressFired = false;
 
 bool isBacklightEnabled = true;
 
+void IRAM_ATTR buttonISR();
 int screenMode = 1;
 int nOfScreenModes = 7;
 
@@ -79,7 +82,7 @@ struct PiMetrics {
 };
 
 PiMetrics pis[2] = {
-  { "Raspberry Pi", 'R', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, "192.168.1.147" },
+  { "Raspberry Pi", 'R', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, "192.168.0.2" },
   { "Orange Pi", 'O', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, "192.168.0.3" }
 };
 
@@ -135,6 +138,7 @@ void setup() {
   analogWriteFreq(25000);
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, CHANGE);
 
   lcd.init();
   lcd.backlight();
@@ -186,6 +190,16 @@ void setup() {
   lcd.clear();
 }
 
+void IRAM_ATTR buttonISR() {
+  btnPressed = (digitalRead(BUTTON_PIN) == LOW);
+  if (btnPressed) {
+    btnDownMs = millis();
+  } else {
+    btnUpMs = millis();
+  }
+  btnEvent = true;
+}
+
 template<typename T>
 void safeAssign(JSONVar json, const char* key, T& target) {
   if (json.hasOwnProperty(key)) {
@@ -204,7 +218,7 @@ void pollPi(PiMetrics &pi) {
   String url = "http://" + String(pi.host) + ":" + String(piPort) + "/";
 
   if (http.begin(client, url)) {
-    http.setTimeout(1000);
+    http.setTimeout(2000);
 
     Serial.println("[HTTP] GET...\n");
     // start connection and send HTTP header
@@ -237,6 +251,8 @@ void pollPi(PiMetrics &pi) {
 
     } else {
       Serial.printf("[HTTP] GET failed for host: %s\n", pi.host);
+      Serial.printf("[HTTP] HTTP code: %d\n", httpCode);
+      Serial.printf("[HTTP] full URL: %s\n", url.c_str());
       Serial.println(" ");
       pi.online = false;
     }
@@ -491,7 +507,7 @@ void screenModeSelector() {
 
 int tempToDuty(float temp) {
   const float T_MIN = 40.0;
-  const float T_MAX = 65.0;
+  const float T_MAX = 85.0;
   const int DUTY_MIN = 10;
   const int DUTY_MAX = 99;
 
@@ -499,7 +515,8 @@ int tempToDuty(float temp) {
   if (temp >= T_MAX) return DUTY_MAX;
 
   float ratio = (temp - T_MIN) / (T_MAX - T_MIN);
-  return DUTY_MIN + ratio * (DUTY_MAX - DUTY_MIN);
+  float eased = ratio * ratio;
+  return DUTY_MIN + eased * (DUTY_MAX - DUTY_MIN);
 }
 
 void onSinglePress() {
@@ -523,27 +540,29 @@ void onLongPress() {
 }
 
 void checkButton() {
-  bool isPressed = (digitalRead(BUTTON_PIN) == LOW);
+  noInterrupts();
+  bool pressed = btnPressed;
+  unsigned long downMs = btnDownMs;
+  unsigned long upMs = btnUpMs;
+  bool event = btnEvent;
+  btnEvent = false;
+  interrupts();
 
-  if (isPressed && !buttonWasPressed) {
-    pressStartTime = millis();
-    longPressTriggered = false;
-  }
+  if (!event) return;
 
-  if (isPressed && buttonWasPressed && !longPressTriggered) {
-    if (millis() - pressStartTime >= LONG_PRESS_MS) {
-      longPressTriggered = true;
-      onLongPress();
-    }
-  }
-
-  if (!isPressed && buttonWasPressed) {
-    if (!longPressTriggered) {
+  if (pressed) {
+    longPressFired = false;
+  } else if (downMs > 0) {
+    unsigned long duration = upMs - downMs;
+    if (duration >= LONG_PRESS_MS) {
+      if (!longPressFired) {
+        longPressFired = true;
+        onLongPress();
+      }
+    } else {
       onSinglePress();
     }
   }
-
-  buttonWasPressed = isPressed;
 }
 
 void loop() {
